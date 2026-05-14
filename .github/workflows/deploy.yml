@@ -32,12 +32,10 @@ jobs:
           ECR_REPOSITORY: portfolio-app
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          # SHAタグとlatestタグの両方を付けてビルド
           docker build \  
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:latest ./app
 
-          # 両方のタグをプッシュ
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
