@@ -1,0 +1,44 @@
+name: "App CI/CD"
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'app/**'                # appディレクトリ配下の変更時のみ実行
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: portfolio-app # ECRモジュールで作成したリポジトリ名
+          IMAGE_TAG: ${{ github.sha }}
+        run: | # appディレクトリのDockerfileを使用してビルド
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Update ECS Service
+        run: | # 稼働中のECSサービスに対して、最新のイメージタグを適用して強制デプロイ
+          aws ecs update-service \
+            --cluster portfolio-cluster \
+            --service portfolio-service \
+            --force-new-deployment
