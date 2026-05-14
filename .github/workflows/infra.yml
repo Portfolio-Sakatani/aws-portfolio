@@ -1,0 +1,49 @@
+name: "AWS Infrastructure Management"
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 平日（月-金）日本時間 09:00 (UTC 00:00) に起動
+    - cron: '0 0 * * 1-5'
+    # 平日（月-金）日本時間 19:00 (UTC 10:00) に停止
+    - cron: '0 10 * * 1-5'
+
+jobs:
+  terraform:
+    name: "Terraform Apply or Destroy"
+    runs-on: ubuntu-latest
+    env:
+      WORKING_DIR: "infra/environments/dev"
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Execution
+        # スケジュール実行時は時刻で判断、手動実行時はデフォルトでapply（必要に応じて変更可）
+        run: |
+          if [[ "${{ github.event.schedule }}" == "0 0 * * 1-5" ]]; then
+            echo "Weekday Morning: Running Apply"
+            terraform apply -auto-approve
+          elif [[ "${{ github.event.schedule }}" == "0 10 * * 1-5" ]]; then
+            echo "Weekday Evening: Running Destroy"
+            terraform destroy -auto-approve
+          else
+            echo "Manual Trigger: Defaulting to Apply"
+            terraform apply -auto-approve
+          fi
+        working-directory: ${{ env.WORKING_DIR }}
