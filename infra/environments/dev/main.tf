@@ -32,6 +32,7 @@ data "aws_route53_zone" "main" {
 module "vpc" {
   source  = "../../modules/vpc"
   project = "portfolio"
+}
 
 # 2. SGモジュールの呼び出し（VPC IDが必要）
 module "sg" {
