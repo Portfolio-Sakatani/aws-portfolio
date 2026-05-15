@@ -1,3 +1,4 @@
+# ECRリポジトリの定義
 resource "aws_ecr_repository" "this" {
   name = "${var.project}-app"
 
@@ -5,6 +6,6 @@ resource "aws_ecr_repository" "this" {
     scan_on_push = true
   }
 
-  # 学習用途のため、リポジトリ削除時にイメージが残っていても削除を許可する設定
+  # リソース削除時の動作設定(強制削除)
   force_delete = true
 }
