@@ -36,7 +36,7 @@ IaC、CI/CD、自動化、ネットワーク分離などを取り入れ、運用
 
 ### 確認可能な情報
 
-`/api/info` エンドポイントでは以下を確認できます。
+`/api/info` では以下を確認できます。
 
 - ECS Taskが稼働しているAvailability Zone
 - ECS内部ホスト名
