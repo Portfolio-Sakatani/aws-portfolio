@@ -19,7 +19,7 @@ IaC、CI/CD、自動化、ネットワーク分離などを取り入れ、運用
 
 ## 2. システムアーキテクチャ
 
-![Architecture Diagram](docs/architecture.png)
+![Architecture Diagram](./docs/architecture.png)
 
 ### 構成概要
 
