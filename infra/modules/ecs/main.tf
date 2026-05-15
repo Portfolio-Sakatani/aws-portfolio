@@ -1,7 +1,9 @@
+# # ECSクラスター定義
 resource "aws_ecs_cluster" "this" {
   name = "${var.project}-cluster"
 }
 
+# タスク定義（コンテナの実行スペックや利用イメージの定義）
 resource "aws_ecs_task_definition" "this" {
   family                   = "${var.project}-task"
   requires_compatibilities = ["FARGATE"]
@@ -10,6 +12,7 @@ resource "aws_ecs_task_definition" "this" {
   memory                   = "512"
   execution_role_arn       = var.execution_role_arn
 
+# コンテナの詳細設定（JSON形式
   container_definitions = jsonencode([
     {
       name  = "${var.project}-app"
@@ -22,15 +25,15 @@ resource "aws_ecs_task_definition" "this" {
         }
       ]
 
-      # --- 追加機能: 環境変数の注入 ---
+      # アプリケーションに渡す環境変数の設定
       environment = [
         {
           name  = "AWS_REGION"
           value = var.region
         }
       ]
-      # ----------------------------
 
+      # CloudWatch Logsへのログ出力設定
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -43,8 +46,7 @@ resource "aws_ecs_task_definition" "this" {
   ])
 }
 
-# (aws_ecs_cluster と aws_ecs_service は以前のコードと同じため省略)
-
+# ECS定義
 resource "aws_ecs_service" "this" {
   name            = "${var.project}-service"
   cluster         = aws_ecs_cluster.this.id
@@ -52,12 +54,14 @@ resource "aws_ecs_service" "this" {
   desired_count   = 2
   launch_type     = "FARGATE"
 
+  # ネットワーク設定
   network_configuration {
     subnets          = var.private_subnets
     security_groups  = [var.ecs_sg_id]
     assign_public_ip = false
   }
 
+  # ロードバランサーとの連携設定
   load_balancer {
     target_group_arn = var.target_group_arn
     container_name   = "${var.project}-app"
