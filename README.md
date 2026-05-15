@@ -224,17 +224,3 @@ terraform apply
 - メトリクス監視強化
 
 ---
-
-## 9. 学習目的
-
-本プロジェクトでは以下の実践的な技術習得を目的としています。
-
-- AWSインフラ設計
-- TerraformによるIaC
-- Dockerコンテナ運用
-- ECS Fargate構築
-- GitHub ActionsによるCI/CD
-- AWSネットワーク設計
-- セキュリティ設計
-- 運用コスト最適化
-- ログ管理と監視
