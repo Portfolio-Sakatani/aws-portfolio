@@ -1,3 +1,4 @@
+# CloudWatch Logsロググループ定義
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/ecs/${var.project}-app"
   retention_in_days = var.retention_days
