@@ -1,4 +1,3 @@
-````md
 # AWS Container Infrastructure Portfolio
 
 ## 1. プロジェクト概要
@@ -214,4 +213,3 @@ terraform apply
 - セキュリティ設計
 - 運用コスト最適化
 - ログ管理と監視
-````
