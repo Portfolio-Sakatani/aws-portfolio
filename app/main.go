@@ -39,7 +39,6 @@ func getAZ() string {
 // レスポンス全体の構造体
 type SystemResponse struct {
 	Service     string      `json:"service"`
-	Version     string      `json:"version"`
 	Time        string      `json:"time"`
 	ServerInfo  ServerInfo  `json:"server_info"`
 	RequestInfo RequestInfo `json:"request_info"`
