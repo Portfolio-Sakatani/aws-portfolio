@@ -44,6 +44,7 @@ type SystemResponse struct {
 	RequestInfo RequestInfo `json:"request_info"`
 }
 
+// サーバー側の実行環境情報
 type ServerInfo struct {
 	Hostname     string `json:"hostname"`
 	Region       string `json:"region"`
@@ -51,6 +52,7 @@ type ServerInfo struct {
 	RequestCount int64  `json:"instance_request_count"`
 }
 
+// ALB経由で渡されるクライアント接続情報
 type RequestInfo struct {
 	ClientIP     string `json:"client_ip"`
 	ForwardedFor string `json:"forwarded_for"`
@@ -93,6 +95,7 @@ func main() {
 		encoder.Encode(response)
 	})
 
+	// ポート8080でサーバーを起動
 	fmt.Println("Server starting on :8080...")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		fmt.Printf("Error starting server: %s\n", err)
