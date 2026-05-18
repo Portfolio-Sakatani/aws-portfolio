@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - 'app/**'                # appディレクトリ配下の変更時のみ実行
+      - 'app/**'
       - '.github/workflows/deploy.yml'
   workflow_call:
 
@@ -43,8 +43,14 @@ jobs:
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       - name: Update ECS Service
-        run: | # 稼働中のECSサービスに対して、最新のイメージタグを適用して強制デプロイ
+        run: |
           aws ecs update-service \
             --cluster portfolio-cluster \
             --service portfolio-service \
             --force-new-deployment
+
+      - name: Wait for ECS Service Stable
+        run: |
+          aws ecs wait services-stable \
+            --cluster portfolio-cluster \
+            --services portfolio-service
