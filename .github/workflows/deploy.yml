@@ -6,6 +6,7 @@ on:
     paths:
       - 'app/**'                # appディレクトリ配下の変更時のみ実行
       - '.github/workflows/deploy.yml'
+  workflow_call:
 
 jobs:
   build-and-deploy:
