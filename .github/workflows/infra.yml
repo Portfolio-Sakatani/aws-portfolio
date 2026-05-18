@@ -3,8 +3,8 @@ name: "AWS Infrastructure Management"
 on:
   workflow_dispatch:
   schedule:
-    # 平日（月-金）日本時間 09:00 (UTC 00:00) に起動
-    - cron: '0 0 * * 1-5'
+    # 平日（月-金）日本時間 08:50 (UTC 前日23:50) に起動
+    - cron: '50 23 * * 0-4'
     # 平日（月-金）日本時間 19:00 (UTC 10:00) に停止
     - cron: '0 10 * * 1-5'
 
@@ -14,10 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WORKING_DIR: "infra/environments/dev"
+    outputs:
+      exec_hour: ${{ steps.check-time.outputs.exec_hour }}
     
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 実行された時間を抜き出すステップ
+      - name: Check Time
+        id: check-time
+        run: |
+          EXEC_HOUR=$(date -u -d "${{ github.event.schedule }}" +%H 2>/dev/null || echo "manual")
+          echo "exec_hour=$EXEC_HOUR" >> $GITHUB_OUTPUT
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -34,12 +43,11 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Terraform Execution
-        
         run: |
-          if [[ "${{ github.event.schedule }}" == "0 0 * * 1-5" ]]; then
+          if [[ "${{ steps.check-time.outputs.exec_hour }}" == "23" ]]; then
             echo "Weekday Morning: Running Apply"
             terraform apply -auto-approve
-          elif [[ "${{ github.event.schedule }}" == "0 10 * * 1-5" ]]; then
+          elif [[ "${{ steps.check-time.outputs.exec_hour }}" == "10" ]]; then
             echo "Weekday Evening: Running Destroy"
             terraform destroy -auto-approve
           else
@@ -47,3 +55,12 @@ jobs:
             terraform apply -auto-approve
           fi
         working-directory: ${{ env.WORKING_DIR }}
+
+  deploy-app:
+    name: "Trigger App Deployment"
+    needs: terraform # 上記のインフラ作成が成功した後に動く
+    if: |
+      needs.terraform.outputs.exec_hour == '23' || 
+      needs.terraform.outputs.exec_hour == 'manual'
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit # AWSの認証情報を引き継ぐ
