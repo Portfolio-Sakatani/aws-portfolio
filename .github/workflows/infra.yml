@@ -15,18 +15,16 @@ jobs:
     env:
       WORKING_DIR: "infra/environments/dev"
     outputs:
-      exec_hour: ${{ steps.check-time.outputs.exec_hour }}
+      schedule: ${{ steps.set-schedule.outputs.schedule }}
     
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 実行された時間を抜き出すステップ
-      - name: Check Time
-        id: check-time
+      - name: Set Schedule
+        id: set-schedule
         run: |
-          EXEC_HOUR=$(date -u -d "${{ github.event.schedule }}" +%H 2>/dev/null || echo "manual")
-          echo "exec_hour=$EXEC_HOUR" >> $GITHUB_OUTPUT
+          echo "schedule=${{ github.event.schedule }}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -44,10 +42,12 @@ jobs:
 
       - name: Terraform Execution
         run: |
-          if [[ "${{ steps.check-time.outputs.exec_hour }}" == "23" ]]; then
+          SCHEDULE="${{ github.event.schedule }}"
+
+          if [[ "$SCHEDULE" == "50 23 * * 0-4" ]]; then
             echo "Weekday Morning: Running Apply"
             terraform apply -auto-approve
-          elif [[ "${{ steps.check-time.outputs.exec_hour }}" == "10" ]]; then
+          elif [[ "$SCHEDULE" == "0 10 * * 1-5" ]]; then
             echo "Weekday Evening: Running Destroy"
             terraform destroy -auto-approve
           else
@@ -58,9 +58,9 @@ jobs:
 
   deploy-app:
     name: "Trigger App Deployment"
-    needs: terraform # 上記のインフラ作成が成功した後に動く
+    needs: terraform
     if: |
-      needs.terraform.outputs.exec_hour == '23' || 
-      needs.terraform.outputs.exec_hour == 'manual'
+      needs.terraform.outputs.schedule == '50 23 * * 0-4' ||
+      needs.terraform.outputs.schedule == ''
     uses: ./.github/workflows/deploy.yml
-    secrets: inherit # AWSの認証情報を引き継ぐ
+    secrets: inherit
