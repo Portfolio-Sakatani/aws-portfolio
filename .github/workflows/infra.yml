@@ -34,7 +34,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Terraform Execution
-        # スケジュール実行時は時刻で判断、手動実行時はデフォルトでapply（必要に応じて変更可）
+        
         run: |
           if [[ "${{ github.event.schedule }}" == "0 0 * * 1-5" ]]; then
             echo "Weekday Morning: Running Apply"
