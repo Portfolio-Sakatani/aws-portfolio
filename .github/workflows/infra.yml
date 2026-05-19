@@ -2,21 +2,25 @@ name: "AWS Infrastructure Management"
 
 on:
   workflow_dispatch:
+
   schedule:
-    # 平日（月-金）日本時間 08:50 (UTC 前日23:50) に起動
+    # 平日 JST 08:50 (UTC 前日 23:50)
     - cron: '50 23 * * 0-4'
-    # 平日（月-金）日本時間 19:00 (UTC 10:00) に停止
-    - cron: '0 10 * * 1-5'
+
+    # 平日 JST 19:05 (UTC 10:05)
+    - cron: '5 10 * * 1-5'
 
 jobs:
   terraform:
     name: "Terraform Apply or Destroy"
     runs-on: ubuntu-latest
+
     env:
       WORKING_DIR: "infra/environments/dev"
+
     outputs:
       schedule: ${{ steps.set-schedule.outputs.schedule }}
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,9 +51,11 @@ jobs:
           if [[ "$SCHEDULE" == "50 23 * * 0-4" ]]; then
             echo "Weekday Morning: Running Apply"
             terraform apply -auto-approve
-          elif [[ "$SCHEDULE" == "0 10 * * 1-5" ]]; then
+
+          elif [[ "$SCHEDULE" == "5 10 * * 1-5" ]]; then
             echo "Weekday Evening: Running Destroy"
             terraform destroy -auto-approve
+
           else
             echo "Manual Trigger: Defaulting to Apply"
             terraform apply -auto-approve
@@ -58,9 +64,13 @@ jobs:
 
   deploy-app:
     name: "Trigger App Deployment"
+
     needs: terraform
+
     if: |
       needs.terraform.outputs.schedule == '50 23 * * 0-4' ||
       needs.terraform.outputs.schedule == ''
+
     uses: ./.github/workflows/deploy.yml
+
     secrets: inherit
