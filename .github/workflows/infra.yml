@@ -2,6 +2,15 @@ name: "AWS Infrastructure Management"
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: "実行するアクションを選択（手動実行時のみ有効）"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - apply
+          - destroy
 
   schedule:
     # 平日 JST 08:50 (UTC 前日 23:50)
@@ -20,6 +29,7 @@ jobs:
 
     outputs:
       schedule: ${{ steps.set-schedule.outputs.schedule }}
+      action: ${{ steps.set-action.outputs.action }}
 
     steps:
       - name: Checkout
@@ -29,6 +39,17 @@ jobs:
         id: set-schedule
         run: |
           echo "schedule=${{ github.event.schedule }}" >> $GITHUB_OUTPUT
+
+      - name: Set Action Output
+        id: set-action
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "action=${{ github.event.inputs.action }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.schedule }}" == "5 10 * * 1-5" ]]; then
+            echo "action=destroy" >> $GITHUB_OUTPUT
+          else
+            echo "action=apply" >> $GITHUB_OUTPUT
+          fi
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -47,6 +68,7 @@ jobs:
       - name: Terraform Execution
         run: |
           SCHEDULE="${{ github.event.schedule }}"
+          INPUT_ACTION="${{ github.event.inputs.action }}"
 
           if [[ "$SCHEDULE" == "50 23 * * 0-4" ]]; then
             echo "Weekday Morning: Running Apply"
@@ -56,21 +78,26 @@ jobs:
             echo "Weekday Evening: Running Destroy"
             terraform destroy -auto-approve
 
+          elif [[ "$INPUT_ACTION" == "destroy" ]]; then
+            echo "Manual Trigger: Running Destroy"
+            terraform destroy -auto-approve
+
           else
-            echo "Manual Trigger: Temporary Destroy"
+            echo "Manual Trigger: Running Apply"
             terraform apply -auto-approve
           fi
         working-directory: ${{ env.WORKING_DIR }}
 
   deploy-app:
     name: "Trigger App Deployment"
-
     needs: terraform
 
+    # 以下のいずれかの条件を満たす場合のみデプロイを実行
+    # 1. 朝の自動applyスケジュールであること
+    # 2. 手動実行（scheduleが空）かつ、選択したアクションが 'apply' であること
     if: |
       needs.terraform.outputs.schedule == '50 23 * * 0-4' ||
-      needs.terraform.outputs.schedule == ''
+      (needs.terraform.outputs.schedule == '' && needs.terraform.outputs.action == 'apply')
 
     uses: ./.github/workflows/deploy.yml
-
     secrets: inherit
