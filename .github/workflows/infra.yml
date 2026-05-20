@@ -57,7 +57,7 @@ jobs:
             terraform destroy -auto-approve
 
           else
-            echo "Manual Trigger: Defaulting to Apply"
+            echo "Manual Trigger: Temporary Destroy"
             terraform apply -auto-approve
           fi
         working-directory: ${{ env.WORKING_DIR }}
