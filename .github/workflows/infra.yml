@@ -14,10 +14,10 @@ on:
 
   schedule:
     # 平日 JST 08:50 (UTC 23:50 前日)
-    #- cron: '50 23 * * 1-5'
+    - cron: '50 23 * * 1-5'
 
     # 平日 JST 19:05 (UTC 10:05 当日)
-    #- cron: '5 10 * * 1-5'
+    - cron: '5 10 * * 1-5'
 
 jobs:
   terraform:
