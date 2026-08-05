@@ -343,17 +343,17 @@ const indexHTML = `<!DOCTYPE html>
       if (accesses.length === 0) {
         userList.innerHTML = '<div class="empty-note">まだ記録がありません</div>';
       } else {
-        userList.innerHTML = accesses.map((info, i) => `
-          <div class="access-entry">
-            <span class="access-index">#${i + 1}</span>
-            <span class="access-ip">${escapeHtml(info.client_ip || '-')}</span>
-            <div class="access-meta">
-              Visited: ${escapeHtml(info.observed_at || '-')} UTC ・
-              XFF: ${escapeHtml(info.forwarded_for || '-')} ・
-              UA: ${escapeHtml(info.ua || '-')}
-            </div>
-          </div>
-        `).join('');
+        userList.innerHTML = accesses.map(function(info, i) {
+          return '<div class="access-entry">'
+            + '<span class="access-index">#' + (i + 1) + '</span>'
+            + '<span class="access-ip">' + escapeHtml(info.client_ip || '-') + '</span>'
+            + '<div class="access-meta">'
+            + 'Visited: ' + escapeHtml(info.observed_at || '-') + ' UTC / '
+            + 'XFF: ' + escapeHtml(info.forwarded_for || '-') + ' / '
+            + 'UA: ' + escapeHtml(info.ua || '-')
+            + '</div>'
+            + '</div>';
+        }).join('');
       }
 
       const setCard = (prefix, info) => {
