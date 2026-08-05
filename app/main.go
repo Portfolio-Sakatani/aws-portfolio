@@ -14,7 +14,11 @@ import (
 )
 
 // 累積リクエスト数（インスタンス単位）
-var userRequestCount int64
+// pageViewCount: "/" への実際のページ遷移（ブラウザで開いた回数）
+// apiPollCount:  ダッシュボードJSが5秒ごとに送る自動更新のfetch回数
+// healthCheckCount: ALBヘルスチェックの回数
+var pageViewCount int64
+var apiPollCount int64
 var healthCheckCount int64
 
 // 直近1件の「実ユーザーアクセス」「ALBヘルスチェック」の情報を保持
@@ -86,7 +90,8 @@ type ServerInfo struct {
 	Hostname         string `json:"hostname"`
 	Region           string `json:"region"`
 	AZ               string `json:"az"`
-	UserRequestCount int64  `json:"user_request_count"`
+	PageViewCount    int64  `json:"page_view_count"`
+	ApiPollCount     int64  `json:"api_poll_count"`
 	HealthCheckCount int64  `json:"health_check_count"`
 }
 
@@ -248,7 +253,8 @@ const indexHTML = `<!DOCTYPE html>
 
     <div class="card">
       <h2>Traffic</h2>
-      <div class="row"><span class="label">User Requests</span><span class="value" id="userCount">-</span></div>
+      <div class="row"><span class="label">Page Views(実訪問)</span><span class="value" id="pageViewCount">-</span></div>
+      <div class="row"><span class="label">API Polls(自動更新分)</span><span class="value" id="apiPollCount">-</span></div>
       <div class="row"><span class="label">ALB Health Checks</span><span class="value" id="healthCount">-</span></div>
     </div>
 
@@ -291,7 +297,8 @@ const indexHTML = `<!DOCTYPE html>
       document.getElementById('hostname').textContent = data.server_info.hostname || '-';
       document.getElementById('region').textContent = data.server_info.region || '-';
       document.getElementById('az').textContent = data.server_info.az || '-';
-      document.getElementById('userCount').textContent = data.server_info.user_request_count;
+      document.getElementById('pageViewCount').textContent = data.server_info.page_view_count;
+      document.getElementById('apiPollCount').textContent = data.server_info.api_poll_count;
       document.getElementById('healthCount').textContent = data.server_info.health_check_count;
 
       const setCard = (prefix, info) => {
@@ -335,7 +342,8 @@ func main() {
 		if healthCheck {
 			atomic.AddInt64(&healthCheckCount, 1)
 		} else {
-			atomic.AddInt64(&userRequestCount, 1)
+			// "/" への直接アクセスは「実際にページを開いた」とみなす
+			atomic.AddInt64(&pageViewCount, 1)
 		}
 		recordAccess(buildRequestInfo(r, healthCheck))
 
@@ -349,14 +357,20 @@ func main() {
 	// "/" と同じダッシュボードHTMLを返す。JSからのfetch呼び出し等はJSONを返す。
 	http.HandleFunc("/api/info", func(w http.ResponseWriter, r *http.Request) {
 		healthCheck := isHealthCheck(r)
+		wantsHTML := strings.Contains(r.Header.Get("Accept"), "text/html")
+
 		if healthCheck {
 			atomic.AddInt64(&healthCheckCount, 1)
+		} else if wantsHTML {
+			// ブラウザで直接 /api/info を開いた場合も「実際にページを開いた」とみなす
+			atomic.AddInt64(&pageViewCount, 1)
 		} else {
-			atomic.AddInt64(&userRequestCount, 1)
+			// JSからの自動更新fetchはポーリングとしてカウント
+			atomic.AddInt64(&apiPollCount, 1)
 		}
 		recordAccess(buildRequestInfo(r, healthCheck))
 
-		if strings.Contains(r.Header.Get("Accept"), "text/html") {
+		if wantsHTML {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, indexHTML)
@@ -372,7 +386,8 @@ func main() {
 				Hostname:         hostname,
 				Region:           os.Getenv("AWS_REGION"),
 				AZ:               getAZ(),
-				UserRequestCount: atomic.LoadInt64(&userRequestCount),
+				PageViewCount:    atomic.LoadInt64(&pageViewCount),
+				ApiPollCount:     atomic.LoadInt64(&apiPollCount),
 				HealthCheckCount: atomic.LoadInt64(&healthCheckCount),
 			},
 			LastUserAccess:  lastUser,
