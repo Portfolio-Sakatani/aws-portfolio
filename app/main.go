@@ -21,12 +21,14 @@ var pageViewCount int64
 var apiPollCount int64
 var healthCheckCount int64
 
-// 直近1件の「実ユーザーアクセス」「ALBヘルスチェック」の情報を保持
+// 直近の「実ユーザーアクセス」履歴（最大5件、新しい順）と、直近1件の「ALBヘルスチェック」情報を保持
 // 複数goroutine（複数リクエスト）から同時に読み書きされるためmutexで保護する
+const maxUserAccessHistory = 5
+
 var (
-	lastAccessMu     sync.Mutex
-	lastUserAccess   *RequestInfo
-	lastHealthCheck  *RequestInfo
+	lastAccessMu       sync.Mutex
+	userAccessHistory  []RequestInfo // 先頭が最新
+	lastHealthCheck    *RequestInfo
 )
 
 // ECSタスクメタデータ構造体
@@ -78,11 +80,11 @@ func isHealthCheck(r *http.Request) bool {
 
 // レスポンス全体の構造体
 type SystemResponse struct {
-	Service         string       `json:"service"`
-	Time            string       `json:"time"`
-	ServerInfo      ServerInfo   `json:"server_info"`
-	LastUserAccess  *RequestInfo `json:"last_user_access"`
-	LastHealthCheck *RequestInfo `json:"last_health_check"`
+	Service         string        `json:"service"`
+	Time            string        `json:"time"`
+	ServerInfo      ServerInfo    `json:"server_info"`
+	LastUserAccesses []RequestInfo `json:"last_user_accesses"`
+	LastHealthCheck *RequestInfo  `json:"last_health_check"`
 }
 
 // サーバー側の実行環境情報
@@ -117,22 +119,31 @@ func buildRequestInfo(r *http.Request, healthCheck bool) RequestInfo {
 	}
 }
 
-// 直近のアクセス情報を種別ごとに更新する
-func recordAccess(info RequestInfo) {
+// 実ユーザーアクセスを履歴に追加する（先頭に挿入し、最大件数を超えたら古いものを切り捨てる）
+func recordUserAccess(info RequestInfo) {
 	lastAccessMu.Lock()
 	defer lastAccessMu.Unlock()
-	if info.IsHealthCheck {
-		lastHealthCheck = &info
-	} else {
-		lastUserAccess = &info
+	userAccessHistory = append([]RequestInfo{info}, userAccessHistory...)
+	if len(userAccessHistory) > maxUserAccessHistory {
+		userAccessHistory = userAccessHistory[:maxUserAccessHistory]
 	}
 }
 
-// 直近のアクセス情報のスナップショットを取得する
-func snapshotLastAccess() (userAccess *RequestInfo, healthCheck *RequestInfo) {
+// ALBヘルスチェックの直近1件を更新する
+func recordHealthCheck(info RequestInfo) {
 	lastAccessMu.Lock()
 	defer lastAccessMu.Unlock()
-	return lastUserAccess, lastHealthCheck
+	lastHealthCheck = &info
+}
+
+// 直近のアクセス情報のスナップショットを取得する
+func snapshotLastAccess() (userAccesses []RequestInfo, healthCheck *RequestInfo) {
+	lastAccessMu.Lock()
+	defer lastAccessMu.Unlock()
+	// スライスのコピーを返す（呼び出し側での意図しない書き換えを防ぐ）
+	userAccesses = make([]RequestInfo, len(userAccessHistory))
+	copy(userAccesses, userAccessHistory)
+	return userAccesses, lastHealthCheck
 }
 
 // トップページ（ダッシュボードUI）のHTML
@@ -235,6 +246,32 @@ const indexHTML = `<!DOCTYPE html>
     border-radius: 8px;
     font-size: 14px;
   }
+  .access-entry {
+    padding: 10px 0;
+    border-bottom: 1px solid #f0f2f4;
+  }
+  .access-entry:last-child { border-bottom: none; }
+  .access-entry .access-index {
+    display: inline-block;
+    min-width: 22px;
+    color: var(--text-sub);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .access-entry .access-ip {
+    font-weight: 600;
+  }
+  .access-entry .access-meta {
+    color: var(--text-sub);
+    font-size: 12px;
+    margin-top: 2px;
+    word-break: break-all;
+  }
+  .empty-note {
+    color: var(--text-sub);
+    font-size: 13px;
+    padding: 8px 0;
+  }
 </style>
 </head>
 <body>
@@ -259,12 +296,8 @@ const indexHTML = `<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2>Last User Access</h2>
-      <div class="row"><span class="label">Client IP</span><span class="value" id="userClientIp">-</span></div>
-      <div class="row"><span class="label">X-Forwarded-For</span><span class="value" id="userXff">-</span></div>
-      <div class="row"><span class="label">Trace ID</span><span class="value" id="userTraceId">-</span></div>
-      <div class="row"><span class="label">User-Agent</span><span class="value" id="userUa">-</span></div>
-      <div class="row"><span class="label">Observed At (UTC)</span><span class="value" id="userObservedAt">-</span></div>
+      <h2>Last User Access(直近5件の訪問)</h2>
+      <div id="userAccessList"></div>
     </div>
 
     <div class="card">
@@ -301,6 +334,28 @@ const indexHTML = `<!DOCTYPE html>
       document.getElementById('apiPollCount').textContent = data.server_info.api_poll_count;
       document.getElementById('healthCount').textContent = data.server_info.health_check_count;
 
+      const escapeHtml = (str) => String(str).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+
+      const userList = document.getElementById('userAccessList');
+      const accesses = data.last_user_accesses || [];
+      if (accesses.length === 0) {
+        userList.innerHTML = '<div class="empty-note">まだ記録がありません</div>';
+      } else {
+        userList.innerHTML = accesses.map((info, i) => `
+          <div class="access-entry">
+            <span class="access-index">#${i + 1}</span>
+            <span class="access-ip">${escapeHtml(info.client_ip || '-')}</span>
+            <div class="access-meta">
+              Visited: ${escapeHtml(info.observed_at || '-')} UTC ・
+              XFF: ${escapeHtml(info.forwarded_for || '-')} ・
+              UA: ${escapeHtml(info.ua || '-')}
+            </div>
+          </div>
+        `).join('');
+      }
+
       const setCard = (prefix, info) => {
         if (!info) {
           document.getElementById(prefix + 'ClientIp').textContent = '(まだ記録がありません)';
@@ -316,7 +371,6 @@ const indexHTML = `<!DOCTYPE html>
         document.getElementById(prefix + 'Ua').textContent = info.ua || '-';
         document.getElementById(prefix + 'ObservedAt').textContent = info.observed_at || '-';
       };
-      setCard('user', data.last_user_access);
       setCard('health', data.last_health_check);
 
       document.getElementById('time').textContent = data.time || '-';
@@ -341,11 +395,12 @@ func main() {
 		healthCheck := isHealthCheck(r)
 		if healthCheck {
 			atomic.AddInt64(&healthCheckCount, 1)
+			recordHealthCheck(buildRequestInfo(r, true))
 		} else {
-			// "/" への直接アクセスは「実際にページを開いた」とみなす
+			// "/" への直接アクセスは「実際にページを開いた」とみなし、履歴に追加する
 			atomic.AddInt64(&pageViewCount, 1)
+			recordUserAccess(buildRequestInfo(r, false))
 		}
-		recordAccess(buildRequestInfo(r, healthCheck))
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -361,14 +416,16 @@ func main() {
 
 		if healthCheck {
 			atomic.AddInt64(&healthCheckCount, 1)
+			recordHealthCheck(buildRequestInfo(r, true))
 		} else if wantsHTML {
-			// ブラウザで直接 /api/info を開いた場合も「実際にページを開いた」とみなす
+			// ブラウザで直接 /api/info を開いた場合も「実際にページを開いた」とみなし、履歴に追加する
 			atomic.AddInt64(&pageViewCount, 1)
+			recordUserAccess(buildRequestInfo(r, false))
 		} else {
-			// JSからの自動更新fetchはポーリングとしてカウント
+			// JSからの自動更新fetch（5秒ごとのポーリング）はカウントのみ行い、
+			// 履歴には追加しない（訪問履歴が自動更新で埋め尽くされるのを防ぐため）
 			atomic.AddInt64(&apiPollCount, 1)
 		}
-		recordAccess(buildRequestInfo(r, healthCheck))
 
 		if wantsHTML {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -378,7 +435,7 @@ func main() {
 		}
 
 		hostname, _ := os.Hostname()
-		lastUser, lastHealth := snapshotLastAccess()
+		userAccesses, lastHealth := snapshotLastAccess()
 		response := SystemResponse{
 			Service: "portfolio-app",
 			Time:    time.Now().UTC().Format(time.RFC3339),
@@ -390,8 +447,8 @@ func main() {
 				ApiPollCount:     atomic.LoadInt64(&apiPollCount),
 				HealthCheckCount: atomic.LoadInt64(&healthCheckCount),
 			},
-			LastUserAccess:  lastUser,
-			LastHealthCheck: lastHealth,
+			LastUserAccesses: userAccesses,
+			LastHealthCheck:  lastHealth,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
