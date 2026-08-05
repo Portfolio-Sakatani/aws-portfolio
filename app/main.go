@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -34,6 +36,23 @@ func getAZ() string {
 	var meta TaskMetadataV4
 	json.Unmarshal(body, &meta)
 	return meta.AvailabilityZone
+}
+
+// ALB(X-Forwarded-For)を考慮して実際のクライアントIPを取得する関数
+// X-Forwarded-For は "クライアントIP, プロキシ1のIP, プロキシ2のIP..." の形式で
+// 複数のIPが入ることがあるため、一番左（最初にリクエストしたクライアント）を採用する
+func getClientIP(r *http.Request) string {
+	forwardedFor := r.Header.Get("X-Forwarded-For")
+	if forwardedFor != "" {
+		ips := strings.Split(forwardedFor, ",")
+		return strings.TrimSpace(ips[0])
+	}
+	// X-Forwarded-Forが無い場合（直接アクセスなど）はRemoteAddrにフォールバック
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // レスポンス全体の構造体
@@ -250,7 +269,7 @@ func main() {
 				RequestCount: atomic.LoadInt64(&requestCount),
 			},
 			RequestInfo: RequestInfo{
-				ClientIP:     r.RemoteAddr,
+				ClientIP:     getClientIP(r),
 				ForwardedFor: r.Header.Get("X-Forwarded-For"),
 				TraceID:      r.Header.Get("X-Amzn-Trace-Id"),
 				UserAgent:    r.UserAgent(),
