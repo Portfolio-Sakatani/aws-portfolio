@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -15,6 +16,14 @@ import (
 // 累積リクエスト数（インスタンス単位）
 var userRequestCount int64
 var healthCheckCount int64
+
+// 直近1件の「実ユーザーアクセス」「ALBヘルスチェック」の情報を保持
+// 複数goroutine（複数リクエスト）から同時に読み書きされるためmutexで保護する
+var (
+	lastAccessMu     sync.Mutex
+	lastUserAccess   *RequestInfo
+	lastHealthCheck  *RequestInfo
+)
 
 // ECSタスクメタデータ構造体
 type TaskMetadataV4 struct {
@@ -65,10 +74,11 @@ func isHealthCheck(r *http.Request) bool {
 
 // レスポンス全体の構造体
 type SystemResponse struct {
-	Service     string      `json:"service"`
-	Time        string      `json:"time"`
-	ServerInfo  ServerInfo  `json:"server_info"`
-	RequestInfo RequestInfo `json:"request_info"`
+	Service         string       `json:"service"`
+	Time            string       `json:"time"`
+	ServerInfo      ServerInfo   `json:"server_info"`
+	LastUserAccess  *RequestInfo `json:"last_user_access"`
+	LastHealthCheck *RequestInfo `json:"last_health_check"`
 }
 
 // サーバー側の実行環境情報
@@ -87,6 +97,37 @@ type RequestInfo struct {
 	TraceID       string `json:"trace_id"`
 	UserAgent     string `json:"ua"`
 	IsHealthCheck bool   `json:"is_health_check"`
+	ObservedAt    string `json:"observed_at"`
+}
+
+// 現在のリクエストからRequestInfoを組み立てるヘルパー関数
+func buildRequestInfo(r *http.Request, healthCheck bool) RequestInfo {
+	return RequestInfo{
+		ClientIP:      getClientIP(r),
+		ForwardedFor:  r.Header.Get("X-Forwarded-For"),
+		TraceID:       r.Header.Get("X-Amzn-Trace-Id"),
+		UserAgent:     r.UserAgent(),
+		IsHealthCheck: healthCheck,
+		ObservedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// 直近のアクセス情報を種別ごとに更新する
+func recordAccess(info RequestInfo) {
+	lastAccessMu.Lock()
+	defer lastAccessMu.Unlock()
+	if info.IsHealthCheck {
+		lastHealthCheck = &info
+	} else {
+		lastUserAccess = &info
+	}
+}
+
+// 直近のアクセス情報のスナップショットを取得する
+func snapshotLastAccess() (userAccess *RequestInfo, healthCheck *RequestInfo) {
+	lastAccessMu.Lock()
+	defer lastAccessMu.Unlock()
+	return lastUserAccess, lastHealthCheck
 }
 
 // トップページ（ダッシュボードUI）のHTML
@@ -212,12 +253,21 @@ const indexHTML = `<!DOCTYPE html>
     </div>
 
     <div class="card">
-      <h2>Request Info</h2>
-      <div class="row"><span class="label">Type</span><span class="value" id="requestType">-</span></div>
-      <div class="row"><span class="label">Client IP</span><span class="value" id="clientIp">-</span></div>
-      <div class="row"><span class="label">X-Forwarded-For</span><span class="value" id="xff">-</span></div>
-      <div class="row"><span class="label">Trace ID</span><span class="value" id="traceId">-</span></div>
-      <div class="row"><span class="label">User-Agent</span><span class="value" id="ua">-</span></div>
+      <h2>Last User Access</h2>
+      <div class="row"><span class="label">Client IP</span><span class="value" id="userClientIp">-</span></div>
+      <div class="row"><span class="label">X-Forwarded-For</span><span class="value" id="userXff">-</span></div>
+      <div class="row"><span class="label">Trace ID</span><span class="value" id="userTraceId">-</span></div>
+      <div class="row"><span class="label">User-Agent</span><span class="value" id="userUa">-</span></div>
+      <div class="row"><span class="label">Observed At (UTC)</span><span class="value" id="userObservedAt">-</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Last ALB Health Check</h2>
+      <div class="row"><span class="label">Client IP</span><span class="value" id="healthClientIp">-</span></div>
+      <div class="row"><span class="label">X-Forwarded-For</span><span class="value" id="healthXff">-</span></div>
+      <div class="row"><span class="label">Trace ID</span><span class="value" id="healthTraceId">-</span></div>
+      <div class="row"><span class="label">User-Agent</span><span class="value" id="healthUa">-</span></div>
+      <div class="row"><span class="label">Observed At (UTC)</span><span class="value" id="healthObservedAt">-</span></div>
     </div>
 
     <div class="card">
@@ -244,11 +294,23 @@ const indexHTML = `<!DOCTYPE html>
       document.getElementById('userCount').textContent = data.server_info.user_request_count;
       document.getElementById('healthCount').textContent = data.server_info.health_check_count;
 
-      document.getElementById('requestType').textContent = data.request_info.is_health_check ? 'ALB Health Check' : 'User Access';
-      document.getElementById('clientIp').textContent = data.request_info.client_ip || '-';
-      document.getElementById('xff').textContent = data.request_info.forwarded_for || '-';
-      document.getElementById('traceId').textContent = data.request_info.trace_id || '-';
-      document.getElementById('ua').textContent = data.request_info.ua || '-';
+      const setCard = (prefix, info) => {
+        if (!info) {
+          document.getElementById(prefix + 'ClientIp').textContent = '(まだ記録がありません)';
+          document.getElementById(prefix + 'Xff').textContent = '-';
+          document.getElementById(prefix + 'TraceId').textContent = '-';
+          document.getElementById(prefix + 'Ua').textContent = '-';
+          document.getElementById(prefix + 'ObservedAt').textContent = '-';
+          return;
+        }
+        document.getElementById(prefix + 'ClientIp').textContent = info.client_ip || '-';
+        document.getElementById(prefix + 'Xff').textContent = info.forwarded_for || '-';
+        document.getElementById(prefix + 'TraceId').textContent = info.trace_id || '-';
+        document.getElementById(prefix + 'Ua').textContent = info.ua || '-';
+        document.getElementById(prefix + 'ObservedAt').textContent = info.observed_at || '-';
+      };
+      setCard('user', data.last_user_access);
+      setCard('health', data.last_health_check);
 
       document.getElementById('time').textContent = data.time || '-';
       document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString('ja-JP');
@@ -268,18 +330,23 @@ const indexHTML = `<!DOCTYPE html>
 func main() {
 	// トップページ：シンプルなステータス確認用Web UI（ALBヘルスチェックにも200を返す）
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// ALBのヘルスチェックはこのパスに定期アクセスしてくるため、ここでカウントを分岐する
-		if isHealthCheck(r) {
+		// ALBのヘルスチェックはこのパスに定期アクセスしてくるため、ここで種別ごとに記録する
+		healthCheck := isHealthCheck(r)
+		if healthCheck {
 			atomic.AddInt64(&healthCheckCount, 1)
 		} else {
 			atomic.AddInt64(&userRequestCount, 1)
 		}
+		recordAccess(buildRequestInfo(r, healthCheck))
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, indexHTML)
 	})
 
 	// システム情報API（ブラウザのJSが5秒ごとにfetchする。ヘルスチェックからは通常呼ばれない想定だが念のため同様に分岐）
+	// ブラウザで直接このURLを開いた場合（Accept: text/htmlを含む場合）は、
+	// "/" と同じダッシュボードHTMLを返す。JSからのfetch呼び出し等はJSONを返す。
 	http.HandleFunc("/api/info", func(w http.ResponseWriter, r *http.Request) {
 		healthCheck := isHealthCheck(r)
 		if healthCheck {
@@ -287,7 +354,17 @@ func main() {
 		} else {
 			atomic.AddInt64(&userRequestCount, 1)
 		}
+		recordAccess(buildRequestInfo(r, healthCheck))
+
+		if strings.Contains(r.Header.Get("Accept"), "text/html") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, indexHTML)
+			return
+		}
+
 		hostname, _ := os.Hostname()
+		lastUser, lastHealth := snapshotLastAccess()
 		response := SystemResponse{
 			Service: "portfolio-app",
 			Time:    time.Now().UTC().Format(time.RFC3339),
@@ -298,15 +375,11 @@ func main() {
 				UserRequestCount: atomic.LoadInt64(&userRequestCount),
 				HealthCheckCount: atomic.LoadInt64(&healthCheckCount),
 			},
-			RequestInfo: RequestInfo{
-				ClientIP:      getClientIP(r),
-				ForwardedFor:  r.Header.Get("X-Forwarded-For"),
-				TraceID:       r.Header.Get("X-Amzn-Trace-Id"),
-				UserAgent:     r.UserAgent(),
-				IsHealthCheck: healthCheck,
-			},
+			LastUserAccess:  lastUser,
+			LastHealthCheck: lastHealth,
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		encoder := json.NewEncoder(w)
 		encoder.SetIndent("", "  ")
 		encoder.Encode(response)
