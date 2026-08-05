@@ -13,7 +13,8 @@ import (
 )
 
 // 累積リクエスト数（インスタンス単位）
-var requestCount int64
+var userRequestCount int64
+var healthCheckCount int64
 
 // ECSタスクメタデータ構造体
 type TaskMetadataV4 struct {
@@ -55,6 +56,13 @@ func getClientIP(r *http.Request) string {
 	return host
 }
 
+// ALBのヘルスチェックかどうかを判定する関数
+// ALBはヘルスチェック時にUser-Agentへ "ELB-HealthChecker/2.0" のような文字列を付与するため、
+// それを手がかりに実ユーザーのアクセスと区別する
+func isHealthCheck(r *http.Request) bool {
+	return strings.Contains(r.UserAgent(), "ELB-HealthChecker")
+}
+
 // レスポンス全体の構造体
 type SystemResponse struct {
 	Service     string      `json:"service"`
@@ -65,18 +73,20 @@ type SystemResponse struct {
 
 // サーバー側の実行環境情報
 type ServerInfo struct {
-	Hostname     string `json:"hostname"`
-	Region       string `json:"region"`
-	AZ           string `json:"az"`
-	RequestCount int64  `json:"instance_request_count"`
+	Hostname         string `json:"hostname"`
+	Region           string `json:"region"`
+	AZ               string `json:"az"`
+	UserRequestCount int64  `json:"user_request_count"`
+	HealthCheckCount int64  `json:"health_check_count"`
 }
 
 // ALB経由で渡されるクライアント接続情報
 type RequestInfo struct {
-	ClientIP     string `json:"client_ip"`
-	ForwardedFor string `json:"forwarded_for"`
-	TraceID      string `json:"trace_id"`
-	UserAgent    string `json:"ua"`
+	ClientIP      string `json:"client_ip"`
+	ForwardedFor  string `json:"forwarded_for"`
+	TraceID       string `json:"trace_id"`
+	UserAgent     string `json:"ua"`
+	IsHealthCheck bool   `json:"is_health_check"`
 }
 
 // トップページ（ダッシュボードUI）のHTML
@@ -193,11 +203,17 @@ const indexHTML = `<!DOCTYPE html>
       <div class="row"><span class="label">Hostname</span><span class="value" id="hostname">-</span></div>
       <div class="row"><span class="label">Region</span><span class="value" id="region">-</span></div>
       <div class="row"><span class="label">Availability Zone</span><span class="value" id="az">-</span></div>
-      <div class="row"><span class="label">Request Count</span><span class="value" id="count">-</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Traffic</h2>
+      <div class="row"><span class="label">User Requests</span><span class="value" id="userCount">-</span></div>
+      <div class="row"><span class="label">ALB Health Checks</span><span class="value" id="healthCount">-</span></div>
     </div>
 
     <div class="card">
       <h2>Request Info</h2>
+      <div class="row"><span class="label">Type</span><span class="value" id="requestType">-</span></div>
       <div class="row"><span class="label">Client IP</span><span class="value" id="clientIp">-</span></div>
       <div class="row"><span class="label">X-Forwarded-For</span><span class="value" id="xff">-</span></div>
       <div class="row"><span class="label">Trace ID</span><span class="value" id="traceId">-</span></div>
@@ -225,8 +241,10 @@ const indexHTML = `<!DOCTYPE html>
       document.getElementById('hostname').textContent = data.server_info.hostname || '-';
       document.getElementById('region').textContent = data.server_info.region || '-';
       document.getElementById('az').textContent = data.server_info.az || '-';
-      document.getElementById('count').textContent = data.server_info.instance_request_count;
+      document.getElementById('userCount').textContent = data.server_info.user_request_count;
+      document.getElementById('healthCount').textContent = data.server_info.health_check_count;
 
+      document.getElementById('requestType').textContent = data.request_info.is_health_check ? 'ALB Health Check' : 'User Access';
       document.getElementById('clientIp').textContent = data.request_info.client_ip || '-';
       document.getElementById('xff').textContent = data.request_info.forwarded_for || '-';
       document.getElementById('traceId').textContent = data.request_info.trace_id || '-';
@@ -250,29 +268,42 @@ const indexHTML = `<!DOCTYPE html>
 func main() {
 	// トップページ：シンプルなステータス確認用Web UI（ALBヘルスチェックにも200を返す）
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// ALBのヘルスチェックはこのパスに定期アクセスしてくるため、ここでカウントを分岐する
+		if isHealthCheck(r) {
+			atomic.AddInt64(&healthCheckCount, 1)
+		} else {
+			atomic.AddInt64(&userRequestCount, 1)
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, indexHTML)
 	})
 
-	// システム情報API
+	// システム情報API（ブラウザのJSが5秒ごとにfetchする。ヘルスチェックからは通常呼ばれない想定だが念のため同様に分岐）
 	http.HandleFunc("/api/info", func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&requestCount, 1)
+		healthCheck := isHealthCheck(r)
+		if healthCheck {
+			atomic.AddInt64(&healthCheckCount, 1)
+		} else {
+			atomic.AddInt64(&userRequestCount, 1)
+		}
 		hostname, _ := os.Hostname()
 		response := SystemResponse{
 			Service: "portfolio-app",
 			Time:    time.Now().UTC().Format(time.RFC3339),
 			ServerInfo: ServerInfo{
-				Hostname:     hostname,
-				Region:       os.Getenv("AWS_REGION"),
-				AZ:           getAZ(),
-				RequestCount: atomic.LoadInt64(&requestCount),
+				Hostname:         hostname,
+				Region:           os.Getenv("AWS_REGION"),
+				AZ:               getAZ(),
+				UserRequestCount: atomic.LoadInt64(&userRequestCount),
+				HealthCheckCount: atomic.LoadInt64(&healthCheckCount),
 			},
 			RequestInfo: RequestInfo{
-				ClientIP:     getClientIP(r),
-				ForwardedFor: r.Header.Get("X-Forwarded-For"),
-				TraceID:      r.Header.Get("X-Amzn-Trace-Id"),
-				UserAgent:    r.UserAgent(),
+				ClientIP:      getClientIP(r),
+				ForwardedFor:  r.Header.Get("X-Forwarded-For"),
+				TraceID:       r.Header.Get("X-Amzn-Trace-Id"),
+				UserAgent:     r.UserAgent(),
+				IsHealthCheck: healthCheck,
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
